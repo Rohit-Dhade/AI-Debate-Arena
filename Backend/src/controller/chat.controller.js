@@ -1,7 +1,20 @@
 import { generateResponse, generateChatTitle } from "../services/ai.service.js";
 import chatModel from "../models/chat.model.js";
 import messageModel from "../models/message.model.js";
-import { HumanMessage } from "langchain";
+
+/**
+ * Determine which model should respond next based on message history
+ * @param {Array} messages - Previous messages in the debate
+ * @returns {String} 'aggressive' or 'sarcastic'
+ */
+const getNextModel = (messages) => {
+  // Count AI responses from each model
+  const aggressiveCount = messages.filter((m) => m.writtenBy === "aggressive").length;
+  const sarcasticCount = messages.filter((m) => m.writtenBy === "sarcastic").length;
+
+  // Alternate: if equal, start with aggressive; if aggressive has more, use sarcastic
+  return aggressiveCount > sarcasticCount ? "sarcastic" : "aggressive";
+};
 
 export const setTopic = async (req, res) => {
   const { DetailedTopic, chat: chatId } = req.body;
@@ -23,59 +36,71 @@ export const setTopic = async (req, res) => {
     writtenBy: "user",
   });
 
-  // const messages = await messageModel.find({ chat: chatId || chat._id });
-
-  // const aiResponse = await generateResponse(messages);
-
-  // const aiMessage = await messageModel.create({
-  //   chat: chatId || chat._id,
-  //   content: aiResponse,
-  //   role: "ai",
-  // });
-
-  // console.log(messages);
-
   res.status(200).json({
     success: true,
-    // message: aiResponse,
-    // title: title,
-    // chat,
-    // aiMessage,
-    // userMessage,
+    chat: chat || { _id: chatId },
+    userMessage,
   });
 };
 
 export const DebateMessages = async (req, res) => {
-  const { topic , chat: chatId , ModelName } = req.body;
+  try {
+    const { topic, chat: chatId } = req.body;
 
-  let chat = null;
+    if (!chatId && !topic) {
+      return res.status(400).json({
+        success: false,
+        message: "Topic or chat ID is required",
+      });
+    }
 
-  if (!chatId) {
-    chat = await chatModel.create({
-      user: req.user.id,
-      topic,
+    let chat = null;
+
+    if (!chatId) {
+      const generatedTitle = await generateChatTitle(topic);
+      chat = await chatModel.create({
+        user: req.user.id,
+        topic: generatedTitle,
+      });
+    }
+
+    const actualChatId = chatId || chat._id;
+
+    // Get all messages for this chat
+    const allMessages = await messageModel.find({ chat: actualChatId });
+
+    // Determine which model should respond next
+    const nextModel = getNextModel(allMessages);
+
+    // Generate response from the appropriate model
+    const aiResponse = await generateResponse(
+      nextModel,
+      topic || (chat ? chat.topic : ""),
+      allMessages
+    );
+
+    // Store the AI response
+    const aiMessage = await messageModel.create({
+      chat: actualChatId,
+      content: aiResponse,
+      writtenBy: nextModel,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: aiResponse,
+      model: nextModel,
+      aiMessage,
+      chat: chat || { _id: chatId },
+    });
+  } catch (error) {
+    console.error("Error in DebateMessages:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error generating debate response",
+      error: error.message,
     });
   }
-
-  const messages = await messageModel.find({ chat: chatId || chat._id });
-
-  const aiResponse = await generateResponse(messages);
-
-  const aiMessage = await messageModel.create({
-    chat: chatId || chat._id,
-    content: aiResponse,
-    role: ModelName,
-  });
-
-
-  res.status(200).json({
-    success: true,
-    message: aiResponse,
-    topic: topic,
-    // chat,
-    // aiMessage,
-    // userMessage,
-  });
 };
 
 export const getChats = async (req, res) => {
